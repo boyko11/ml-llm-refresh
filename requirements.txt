@@ -2,3 +2,5 @@ numpy
 matplotlib
 jupyter
 scikit-learn
+plotly
+pandas
