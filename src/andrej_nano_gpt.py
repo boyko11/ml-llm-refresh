@@ -93,7 +93,7 @@ class Head(nn.Module):
 
         # compute attention scores (affinities) from the formula in the Attention is all you need paper
         wei = (q @ k.transpose(-2, -1)) / math.sqrt(
-            self.block_size)  # (B, T, head_size) @ (B, head_size, T) = (B, T, T)
+            self.head_size)  # (B, T, head_size) @ (B, head_size, T) = (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, -float('inf'))  # (B, T, T)
         wei = F.softmax(wei, dim=-1)  # (B, T, T)
         wei = self.dropout(wei)
@@ -168,7 +168,7 @@ class BigramLanguageModel(nn.Module):
                                            self.dropout)  # sa = self-attention
         self.blocks = nn.Sequential(*[Block(self.n_embed, self.n_head, self.dropout) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(self.n_embed)
-        self.lm_head = nn.Linear(self.n_embed, self.vocab_size)  # lm = Language Modelling
+        self.lm_head = nn.Linear(self.n_embed, self.vocab_size)  # lm = Language Modeling
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -187,7 +187,7 @@ class BigramLanguageModel(nn.Module):
             return logits, None
 
         B, T, C = logits.shape
-        logits = logits.view(B * T, C)  # (4, 8, 65) -> (32, 65)
+        logits = logits.view(B * T, C)  # (4, 8, 65(vocab_size)) -> (32, 65(vocab_size))
         targets = targets.view(B * T)  # (32, 1)
 
         loss = F.cross_entropy(logits, targets)
