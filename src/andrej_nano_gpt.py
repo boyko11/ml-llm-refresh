@@ -5,17 +5,17 @@ from torch import nn
 from torch.functional import F
 
 # hyperparameters
-batch_size = 64  # how many independent sequences will we process in parallel?
-block_size = 256  # what is the maximum context length for predictions?
-max_iters = 5000
+batch_size = 8  # how many independent sequences will we process in parallel?
+block_size = 24  # what is the maximum context length for predictions?
+max_iters = 10000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embed = 384
-n_head = 6
+n_embed = 64
+n_head = 4
 head_size = n_embed // n_head
-n_layer = 6
+n_layer = 8
 dropout = 0.2
 # ------------
 
@@ -179,7 +179,6 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))  # (T, C)
 
         x = tok_emb + pos_emb  # (B, T, C)
-        # x = self.sa_heads(x) # (B, T, C)
         x = self.blocks(x)  # (B, T, C)
         x = self.ln_f(x)  # (B, T, C)
         logits = self.lm_head(x)  # (B, T, vocab_size)
@@ -202,9 +201,9 @@ class BigramLanguageModel(nn.Module):
             idx_cond = idx[:, -self.block_size:]
             logits, loss = self(idx_cond)
             # focus only on the last time step
-            logits = logits[:, -1, :]  # becomes (B, C)
+            logits = logits[:, -1, :]  # becomes (B, vocab_size)
             # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1)  # (B, C)
+            probs = F.softmax(logits, dim=-1)  # (B, vocab_size)
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)  # (B, 1)
             # append sampled index to the running sequence
@@ -214,6 +213,8 @@ class BigramLanguageModel(nn.Module):
 
 model = BigramLanguageModel(vocab_size, block_size, n_embed, n_head, n_layer, dropout, device)
 m = model.to(device)
+n_params = sum([p.numel() for p in model.parameters()])
+print(f"Number of parameters: {n_params}")
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -236,6 +237,6 @@ for iter in range(max_iters):
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+print(decode(m.generate(context, max_new_tokens=5000)[0].tolist()))
 
 
