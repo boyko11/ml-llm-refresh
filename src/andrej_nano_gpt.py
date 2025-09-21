@@ -6,7 +6,7 @@ from torch.functional import F
 
 # hyperparameters
 batch_size = 8  # how many independent sequences will we process in parallel?
-block_size = 24  # what is the maximum context length for predictions?
+max_content_length = 24  # what is the maximum context length for predictions?
 max_iters = 10000
 eval_interval = 500
 learning_rate = 3e-4
@@ -48,9 +48,9 @@ val_data = data[n:]
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i + block_size] for i in ix])
-    y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
+    ix = torch.randint(len(data) - max_content_length, (batch_size,))
+    x = torch.stack([data[i:i + max_content_length] for i in ix])
+    y = torch.stack([data[i + 1:i + max_content_length + 1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
 
@@ -73,15 +73,15 @@ def estimate_loss(model):
 class Head(nn.Module):
     """ A Head of self-attention"""
 
-    def __init__(self, block_size, n_embed, head_size, dropout):
+    def __init__(self, max_content_length, n_embed, head_size, dropout):
         super().__init__()
-        self.block_size = block_size
+        self.max_content_length = max_content_length
         self.n_embed = n_embed
         self.head_size = head_size
         self.query = nn.Linear(n_embed, head_size)
         self.key = nn.Linear(n_embed, head_size)
         self.value = nn.Linear(n_embed, head_size)
-        self.register_buffer('tril', torch.tril(torch.ones(self.block_size, self.block_size)))
+        self.register_buffer('tril', torch.tril(torch.ones(self.max_content_length, self.max_content_length)))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -106,10 +106,10 @@ class Head(nn.Module):
 class MultiHeadAttention(nn.Module):
     """ multiple heads of self-attention in parallel """
 
-    def __init__(self, block_size, n_embed, n_head, dropout):
+    def __init__(self, max_content_length, n_embed, n_head, dropout):
         super().__init__()
         head_size = n_embed // n_head
-        self.heads = nn.ModuleList([Head(block_size, n_embed, head_size, dropout) for _ in range(n_head)])
+        self.heads = nn.ModuleList([Head(max_content_length, n_embed, head_size, dropout) for _ in range(n_head)])
         self.proj = nn.Linear(n_embed, n_embed)
 
     def forward(self, x):
@@ -139,7 +139,7 @@ class Block(nn.Module):
 
     def __init__(self, n_embed, n_head, dropout):
         super().__init__()
-        self.sa = MultiHeadAttention(block_size, n_embed, n_head, dropout)
+        self.sa = MultiHeadAttention(max_content_length, n_embed, n_head, dropout)
         self.ffwd = FeedForward(n_embed, dropout)
         self.ln1 = nn.LayerNorm(n_embed)
         self.ln2 = nn.LayerNorm(n_embed)
@@ -152,10 +152,10 @@ class Block(nn.Module):
 
 class BigramLanguageModel(nn.Module):
 
-    def __init__(self, vocab_size, block_size, n_embed, n_head, n_layer, dropout, device):
+    def __init__(self, vocab_size, max_context_length, n_embed, n_head, n_layer, dropout, device):
         super().__init__()
         self.vocab_size = vocab_size
-        self.block_size = block_size
+        self.max_context_length = max_context_length
         self.n_embed = n_embed
         self.n_head = n_head
         self.head_size = self.n_embed // self.n_head
@@ -163,8 +163,9 @@ class BigramLanguageModel(nn.Module):
         self.device = device
 
         self.token_embedding_table = nn.Embedding(self.vocab_size, self.n_embed)
-        self.position_embedding_table = nn.Embedding(self.block_size, self.n_embed)
-        self.sa_heads = MultiHeadAttention(self.block_size, self.n_embed, self.n_head,
+        # self.position_embedding_table = nn.Embedding(self.max_context_length, self.n_embed)
+        self.register_buffer("pos_emb", self.sinusoidal_pe(self.max_context_length, self.n_embed, device))
+        self.sa_heads = MultiHeadAttention(self.max_context_length, self.n_embed, self.n_head,
                                            self.dropout)  # sa = self-attention
         self.blocks = nn.Sequential(*[Block(self.n_embed, self.n_head, self.dropout) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(self.n_embed)
@@ -176,7 +177,8 @@ class BigramLanguageModel(nn.Module):
         # idx and targets are both (B, T)
 
         tok_emb = self.token_embedding_table(idx)  # (B, T, C(n_embed))
-        pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))  # (T, C)
+        # pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))  # (T, C)
+        pos_emb = self.pos_emb[:T, :].unsqueeze(0)  # (1, T, n_embed)
 
         x = tok_emb + pos_emb  # (B, T, C)
         x = self.blocks(x)  # (B, T, C)
@@ -198,7 +200,7 @@ class BigramLanguageModel(nn.Module):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # get the predictions
-            idx_cond = idx[:, -self.block_size:]
+            idx_cond = idx[:, -self.max_context_length:]
             logits, loss = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :]  # becomes (B, vocab_size)
@@ -210,8 +212,22 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)  # (B, T+1)
         return idx
 
+    def sinusoidal_pe(self, max_len, d_model, device):
+        # positions: 0,1,2,...,max_len-1
+        pos = torch.arange(max_len, device=device).unsqueeze(1)  # (max_len, 1)
+        # dimensions: 0,2,4,... for sine (even indices)
+        i = torch.arange(0, d_model, 2, device=device).unsqueeze(0)  # (1, d_model/2)
+        # frequency scaling
+        denom = torch.exp(-math.log(10000) * i / d_model)  # (1, d_model/2)
+        angles = pos * denom  # (max_len, d_model/2)
 
-model = BigramLanguageModel(vocab_size, block_size, n_embed, n_head, n_layer, dropout, device)
+        pe = torch.zeros(max_len, d_model, device=device)
+        pe[:, 0::2] = torch.sin(angles)  # even dimensions
+        pe[:, 1::2] = torch.cos(angles)  # odd dimensions
+        return pe  # (max_len, d_model)
+
+
+model = BigramLanguageModel(vocab_size, max_content_length, n_embed, n_head, n_layer, dropout, device)
 m = model.to(device)
 n_params = sum([p.numel() for p in model.parameters()])
 print(f"Number of parameters: {n_params}")
